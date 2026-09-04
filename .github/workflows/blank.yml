@@ -1,0 +1,88 @@
+name: Auto-update Soul Knight Data
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * *' 
+
+permissions:
+  contents: write
+
+jobs:
+  update-data:
+    runs-on: windows-latest
+
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v3
+      with:
+        persist-credentials: true
+
+    - name: Set up Python 3.14
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.14'
+
+    - name: Install Python deps
+      run: pip install -r requirements.txt
+
+
+    - name: Check current and latest version
+      id: check_version
+      shell: python
+      run: |
+        import json, requests, re, os
+    
+        with open('version.json', 'r', encoding='utf-8') as f:
+            old = json.load(f).get('version', '')
+    
+        url = "http://www.chillyroom.com/zh"
+        apk_re = re.compile(
+            r"https://pages.chillyroom.com/GameOfficialWebsite/strapi-cms/\w+_Soul_Knight_release_chillyroom_([_\d]+)_\w+\.apk"
+        )
+        resp = requests.get(url, timeout=15)
+        m = apk_re.search(resp.text)
+        if not m:
+            raise SystemExit("::error:: Could not detect latest APK version")
+        new = m.group(1).replace("_",".")
+    
+        print(f"Old version: {old}")
+        print(f"New version: {new}")
+        run_update = new != old
+    
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+            out.write(f"old_version={old}\n")
+            out.write(f"new_version={new}\n")
+            out.write(f"run_update={'true' if run_update else 'false'}\n")
+
+
+    - name: Stop if already up to date
+      if: ${{ steps.check_version.outputs.run_update == 'false' }}
+      run: echo "No update needed, exiting."
+
+    - name: Set up .NET 6 Runtime
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '6.0.x'
+
+    - name: Run data export
+      if: ${{ steps.check_version.outputs.run_update == 'true' }}
+      run: python skdata.py
+
+    - name: Update version.json
+      if: ${{ steps.check_version.outputs.run_update == 'true' }}
+      shell: python
+      run: |
+        import json
+        with open("version.json", "w", encoding="utf-8") as f:
+            json.dump({"version": "${{ steps.check_version.outputs.new_version }}"}, f)
+
+    - name: Commit & push updated data
+      if: ${{ steps.check_version.outputs.run_update == 'true' }}
+      shell: bash
+      run: |
+        git config user.name  "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add I2language.csv Allinfo.txt char_code_name.json version.json weapon_full.json weapon_skins.json highest_skin_ids.json needed_data.json needed_data_cn.json enemies.decrypted.csv items.decrypted.csv weapons.decrypted.csv enemy.json item.json character_sprite/ character_drawing/
+        git commit -m "Updated to ${{ steps.check_version.outputs.new_version }}" || echo "Nothing to commit"
+        git push
